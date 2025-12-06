@@ -1,0 +1,15 @@
+discord.py
+wavelink
+yt-dlp
+asyncpg
+SQLAlchemy
+aiohttp
+aiofiles
+python-dotenv
+colorama
+humanize
+pytz
+structlog
+colorlog
+spotipy
+lyricsgenius
