@@ -107,9 +107,17 @@ class EVE(commands.Bot):
     """Main EVE bot class with all intents and permissions"""
 
     def __init__(self):
-        # Configure intents
-        intents = discord.Intents.all()
-
+        # Configure intents - be more selective to avoid privileged intent issues
+        intents = discord.Intents.default()
+        
+        # Enable specific intents we need
+        intents.message_content = True  # Required for command processing
+        intents.members = True          # For member tracking (privileged)
+        intents.guilds = True           # For guild information
+        intents.voice_states = True     # For music/voice features
+        intents.guild_messages = True   # For message events
+        intents.guild_reactions = True  # For reaction events
+        
         # Initialize with command prefix
         super().__init__(
             command_prefix=self.get_prefix,
@@ -118,7 +126,7 @@ class EVE(commands.Bot):
             case_insensitive=True,
             strip_after_prefix=True,
             max_messages=10000,
-            chunk_guilds_at_startup=True
+            chunk_guilds_at_startup=False  # Disable to avoid privileged intent issues
         )
 
         # Core properties
@@ -226,6 +234,11 @@ class EVE(commands.Bot):
             if '__pycache__' in module_path:
                 continue
 
+            # Skip music cogs for now to avoid import errors
+            if 'cogs.music.' in module_path and 'personality' not in module_path:
+                logger.warning(f"Skipping music cog (import issues): {module_path}")
+                continue
+
             available_cogs.append(module_path)
 
         logger.info(f"Found {len(available_cogs)} potential cogs")
@@ -249,12 +262,14 @@ class EVE(commands.Bot):
                 logger.info(f"✅ {message}")
 
                 # Small delay to avoid rate limits
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
 
             except Exception as e:
                 self.failed_cogs.append((cog_path, str(e)))
                 self.stats['errors'] += 1
                 logger.error(f"❌ Failed to load {cog_path}: {e}")
+                # Don't crash on cog loading errors
+                continue
 
         # Report loading results
         self.report_cog_loading()
@@ -268,8 +283,10 @@ class EVE(commands.Bot):
 
         if self.failed_cogs:
             logger.info("❌ Failed cogs:")
-            for cog_path, error in self.failed_cogs:
+            for cog_path, error in self.failed_cogs[:5]:  # Show only first 5 errors
                 logger.info(f"  - {cog_path}: {error}")
+            if len(self.failed_cogs) > 5:
+                logger.info(f"  ... and {len(self.failed_cogs) - 5} more")
 
         logger.info(f"{'='*50}\n")
 
@@ -281,7 +298,11 @@ class EVE(commands.Bot):
         await self.load_all_cogs()
 
         # Sync application commands
-        await self.tree.sync()
+        try:
+            await self.tree.sync()
+            logger.info("✅ Application commands synced")
+        except Exception as e:
+            logger.warning(f"Failed to sync application commands: {e}")
 
         logger.info("Setup hook completed")
 
@@ -317,7 +338,8 @@ class EVE(commands.Bot):
         logger.info(f"⏱️ Startup time: {startup_time:.2f}s")
         logger.info(f"🏠 Servers: {len(self.guilds)}")
         logger.info(f"📦 Cogs loaded: {self.stats['cogs_loaded']}")
-        logger.info(f"🎮 Game: {self.config.get('game_status', 'Managing servers')}")
+        if self.loaded_cogs:
+            logger.info(f"📋 Loaded cogs: {', '.join([c.split('.')[-1] for c in self.loaded_cogs])}")
         logger.info(f"{ready_message}")
         logger.info(f"{'='*50}\n")
 
@@ -545,6 +567,16 @@ class EVE(commands.Bot):
                 reconnect=True,
                 log_handler=None
             )
+        except discord.PrivilegedIntentsRequired as e:
+            logger.critical(f"PRIVILEGED INTENTS ERROR: {e}")
+            logger.critical("\n🔧 Please enable these intents in Discord Developer Portal:")
+            logger.critical("1. Go to https://discord.com/developers/applications/")
+            logger.critical("2. Select your application")
+            logger.critical("3. Go to 'Bot' section")
+            logger.critical("4. Enable under 'Privileged Gateway Intents':")
+            logger.critical("   - SERVER MEMBERS INTENT")
+            logger.critical("   - MESSAGE CONTENT INTENT")
+            sys.exit(1)
         except KeyboardInterrupt:
             logger.info("\n\nReceived interrupt signal. Shutting down gracefully...")
         except Exception as e:
