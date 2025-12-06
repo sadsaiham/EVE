@@ -13,7 +13,16 @@ from datetime import datetime, timedelta
 import random
 import json
 import logging
-from wavelink import Node, Player, Track, Playlist
+from datetime import timezone
+
+# Fix for wavelink 3.x imports
+try:
+    from wavelink import Track
+    from wavelink import Node, Player, Playlist
+except ImportError:
+    # For wavelink 3.x
+    from wavelink.tracks import Playable as Track
+    from wavelink import Node, Player, Playlist
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +33,9 @@ class EvePlayer(wavelink.Player):
         super().__init__(*args, **kwargs)
         
         # Queue system
-        self.queue: Deque[wavelink.Track] = deque()
-        self.history: Deque[wavelink.Track] = deque(maxlen=100)
-        self.original_queue: List[wavelink.Track] = []  # For shuffle restore
+        self.queue: Deque[Track] = deque()
+        self.history: Deque[Track] = deque(maxlen=100)
+        self.original_queue: List[Track] = []  # For shuffle restore
         
         # Playback modes
         self.loop_mode: str = "off"  # off, track, queue
@@ -42,14 +51,14 @@ class EvePlayer(wavelink.Player):
         
         # Player state
         self.text_channel: Optional[int] = None
-        self.last_activity: datetime = datetime.utcnow()
+        self.last_activity: datetime = datetime.now(timezone.utc)
         self.play_start_time: Optional[datetime] = None
         self.total_play_time: int = 0
         
         # Statistics
         self.tracks_played: int = 0
         self.unique_listeners: set = set()
-        self.session_start: datetime = datetime.utcnow()
+        self.session_start: datetime = datetime.now(timezone.utc)
         
         # Equalizer
         self.equalizer: Optional[wavelink.Equalizer] = None
@@ -69,15 +78,15 @@ class EvePlayer(wavelink.Player):
         # Queue metadata
         self.queue_metadata: List[Dict] = []
     
-    async def play(self, track: wavelink.Track, **kwargs):
+    async def play(self, track: Track, **kwargs):
         """Override play to add metadata"""
         if not hasattr(track, 'requester'):
             track.requester = getattr(self, 'last_requester', None)
         
         if not hasattr(track, 'added_at'):
-            track.added_at = datetime.utcnow()
+            track.added_at = datetime.now(timezone.utc)
         
-        self.last_activity = datetime.utcnow()
+        self.last_activity = datetime.now(timezone.utc)
         self.last_requester = track.requester
         
         # Add to unique listeners
@@ -108,12 +117,12 @@ class EvePlayer(wavelink.Player):
                 
                 # Calculate play time
                 if self.play_start_time:
-                    play_duration = (datetime.utcnow() - self.play_start_time).total_seconds()
+                    play_duration = (datetime.now(timezone.utc) - self.play_start_time).total_seconds()
                     self.total_play_time += int(play_duration)
             
             # Play next track
             await self.play(track)
-            self.play_start_time = datetime.utcnow()
+            self.play_start_time = datetime.now(timezone.utc)
             return True
         
         elif self.auto_play and self.radio_mode and self.current:
@@ -128,7 +137,7 @@ class EvePlayer(wavelink.Player):
         
         return False
     
-    async def get_radio_track(self) -> Optional[wavelink.Track]:
+    async def get_radio_track(self) -> Optional[Track]:
         """Get next radio track"""
         if not self.current:
             return None
@@ -149,10 +158,10 @@ class EvePlayer(wavelink.Player):
         
         return None
     
-    def add_to_queue(self, track: wavelink.Track, requester: discord.User, position: int = None):
+    def add_to_queue(self, track: Track, requester: discord.User, position: int = None):
         """Add track to queue with metadata"""
         track.requester = requester
-        track.added_at = datetime.utcnow()
+        track.added_at = datetime.now(timezone.utc)
         
         if position is not None and 0 <= position < len(self.queue):
             # Convert deque to list for insertion
@@ -173,7 +182,7 @@ class EvePlayer(wavelink.Player):
         
         return len(self.queue)
     
-    def remove_from_queue(self, position: int) -> Optional[wavelink.Track]:
+    def remove_from_queue(self, position: int) -> Optional[Track]:
         """Remove track from queue by position"""
         if 0 <= position < len(self.queue):
             # Convert to list for removal
@@ -280,7 +289,7 @@ class EvePlayer(wavelink.Player):
     
     def get_queue_info(self) -> Dict:
         """Get comprehensive queue info"""
-        total_duration = sum(t.length for t in self.queue)
+        total_duration = sum(t.length for t in self.queue) if self.queue else 0
         if self.current:
             total_duration += self.current.length - self.position
         
@@ -298,51 +307,50 @@ class EvePlayer(wavelink.Player):
     
     async def apply_equalizer(self, preset: str):
         """Apply equalizer preset"""
-        presets = {
-            'flat': wavelink.Equalizer.flat(),
-            'bassboost': wavelink.Equalizer.bassboost(),
-            'metal': wavelink.Equalizer.metal(),
-            'piano': wavelink.Equalizer.piano(),
-            'electronic': wavelink.Equalizer.electronic(),
-            'rock': wavelink.Equalizer.rock(),
-            'hiphop': wavelink.Equalizer.hiphop(),
-            'jazz': wavelink.Equalizer.jazz(),
-            'classical': wavelink.Equalizer.classical(),
-            'vocal': wavelink.Equalizer.vocal(),
-            'lofi': self.create_lofi_eq(),
-            'nightcore': self.create_nightcore_eq()
-        }
-        
-        if preset in presets:
-            self.equalizer = presets[preset]
+        try:
+            # For wavelink 3.x, equalizers might work differently
+            if preset == 'flat':
+                eq = wavelink.Equalizer.flat()
+            elif preset == 'bassboost':
+                eq = wavelink.Equalizer.bass()
+            elif preset == 'metal':
+                eq = wavelink.Equalizer.metal()
+            elif preset == 'rock':
+                eq = wavelink.Equalizer.rock()
+            else:
+                # Create custom equalizer
+                bands = [(i, 0.0) for i in range(15)]  # Flat EQ
+                eq = wavelink.Equalizer(bands=bands)
+            
+            self.equalizer = eq
             self.equalizer_preset = preset
-            await self.set_eq(self.equalizer)
+            await self.set_eq(eq)
             return True
-        
-        return False
+        except Exception as e:
+            logger.error(f"Error applying equalizer: {e}")
+            return False
     
-    def create_lofi_eq(self) -> wavelink.Equalizer:
+    def create_lofi_eq(self):
         """Create lofi equalizer preset"""
+        # Custom EQ bands for lofi
         bands = [
-            (0, 0.2),   # Bass boost
+            (0, 0.2),   # Boost bass
             (1, 0.1),
             (2, 0.0),
             (3, -0.1),  # Reduce mids
             (4, -0.2),
             (5, -0.1),
             (6, 0.0),
-            (7, 0.1),   # Slight treble boost
+            (7, 0.1),   # Slight treble
             (8, 0.15),
             (9, 0.1),
-            (10, 0.05), # Reduce highest frequencies
-            (11, -0.05),
-            (12, -0.1),
-            (13, -0.15),
-            (14, -0.2)
+            (10, 0.05)
         ]
+        # Add remaining bands if needed
+        bands.extend([(i, 0.0) for i in range(11, 15)])
         return wavelink.Equalizer(bands=bands)
     
-    def create_nightcore_eq(self) -> wavelink.Equalizer:
+    def create_nightcore_eq(self):
         """Create nightcore equalizer preset"""
         bands = [
             (0, 0.3),   # Strong bass
@@ -370,25 +378,25 @@ class EvePlayer(wavelink.Player):
         
         self.effects[effect] = enabled
         
-        # Apply effect filters
-        filters = wavelink.Filters()
-        
-        if self.effects['nightcore']:
-            filters.timescale = wavelink.Timescale(speed=1.2, pitch=1.3, rate=1.0)
-        
-        if self.effects['bassboost']:
-            # Boost low frequencies
-            pass
-        
-        if self.effects['slow']:
-            filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
-        
-        if self.effects['vaporwave']:
-            filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
-            filters.rotation = wavelink.Rotation(rotation_hz=0.2)
-        
-        await self.set_filters(filters)
-        return True
+        try:
+            # Apply effect filters
+            filters = wavelink.Filters()
+            
+            if self.effects['nightcore']:
+                filters.timescale = wavelink.Timescale(speed=1.2, pitch=1.3, rate=1.0)
+            
+            if self.effects['slow']:
+                filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
+            
+            if self.effects['vaporwave']:
+                filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
+                filters.rotation = wavelink.Rotation(rotation_hz=0.2)
+            
+            await self.set_filters(filters)
+            return True
+        except Exception as e:
+            logger.error(f"Error applying effects: {e}")
+            return False
     
     def start_alone_timer(self):
         """Start auto-disconnect timer when alone"""
@@ -439,24 +447,37 @@ class MusicCore:
         }
         
         # Performance optimization
-        self.track_cache: Dict[str, wavelink.Track] = {}
-        self.search_cache: Dict[str, List[wavelink.Track]] = {}
+        self.track_cache: Dict[str, Track] = {}
+        self.search_cache: Dict[str, List[Track]] = {}
         
         # Background tasks
         self.cleanup_task = None
     
-    # Player management methods
-    # ... (Previous methods from core.py with enhancements)
+    def get_player(self, guild_id: int) -> Optional[EvePlayer]:
+        """Get player for guild"""
+        return self.players.get(guild_id)
+    
+    async def create_player(self, guild_id: int, channel: discord.VoiceChannel) -> EvePlayer:
+        """Create new player for guild"""
+        player = EvePlayer(channel)
+        self.players[guild_id] = player
+        return player
+    
+    async def delete_player(self, guild_id: int):
+        """Delete player for guild"""
+        player = self.players.pop(guild_id, None)
+        if player:
+            await player.disconnect()
     
     async def create_play_session(self, ctx, player: EvePlayer) -> Dict:
         """Create a new play session"""
-        session_id = f"{ctx.guild.id}_{int(datetime.utcnow().timestamp())}"
+        session_id = f"{ctx.guild.id}_{int(datetime.now(timezone.utc).timestamp())}"
         
         session = {
             'id': session_id,
             'guild_id': ctx.guild.id,
             'channel_id': ctx.channel.id,
-            'start_time': datetime.utcnow(),
+            'start_time': datetime.now(timezone.utc),
             'player': player,
             'tracks_played': 0,
             'unique_users': set(),
@@ -472,25 +493,22 @@ class MusicCore:
             session = self.sessions.pop(guild_id)
             
             # Calculate session duration
-            duration = (datetime.utcnow() - session['start_time']).total_seconds()
+            duration = (datetime.now(timezone.utc) - session['start_time']).total_seconds()
             
-            # Save session stats to database
+            # Save session stats
             session_data = {
                 'session_id': session['id'],
                 'guild_id': guild_id,
                 'duration': duration,
                 'tracks_played': session['tracks_played'],
                 'unique_users': len(session['unique_users']),
-                'end_time': datetime.utcnow()
+                'end_time': datetime.now(timezone.utc)
             }
-            
-            # This would save to database
-            # await self.save_session_stats(session_data)
             
             return session_data
         return None
     
-    async def add_track_to_session(self, guild_id: int, track: wavelink.Track):
+    async def add_track_to_session(self, guild_id: int, track: Track):
         """Add track to current session"""
         if guild_id in self.sessions:
             session = self.sessions[guild_id]
@@ -499,19 +517,6 @@ class MusicCore:
             
             if hasattr(track, 'requester') and track.requester:
                 session['unique_users'].add(track.requester.id)
-    
-    # Queue management methods with all features
-    # ... (Enhanced queue methods)
-    
-    async def create_smart_queue(self, seed_track: wavelink.Track, count: int = 20) -> List[wavelink.Track]:
-        """Create a smart queue based on seed track"""
-        # This would interface with recommendation system
-        pass
-    
-    async def generate_mix(self, tracks: List[wavelink.Track]) -> List[wavelink.Track]:
-        """Generate a mix from multiple tracks"""
-        # Analyze tracks and create a smooth transition mix
-        pass
     
     # Voting system
     async def handle_vote_skip(self, ctx, player: EvePlayer) -> str:
@@ -544,31 +549,24 @@ class MusicCore:
     # Effects and filters
     async def apply_player_effects(self, player: EvePlayer, effects: Dict):
         """Apply multiple effects to player"""
-        filters = wavelink.Filters()
-        
-        if effects.get('nightcore'):
-            filters.timescale = wavelink.Timescale(speed=1.2, pitch=1.3, rate=1.0)
-        
-        if effects.get('bassboost'):
-            # Custom bass boost
-            eq = wavelink.Equalizer(bands=[(0, 0.3), (1, 0.25), (2, 0.2)])
-            filters.equalizer = eq
-        
-        if effects.get('slow'):
-            filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
-        
-        if effects.get('vaporwave'):
-            filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
-            filters.rotation = wavelink.Rotation(rotation_hz=0.2)
-        
-        if effects.get('echo'):
-            filters.karaoke = wavelink.Karaoke(level=1.0, mono_level=1.0, filter_band=220.0, filter_width=100.0)
-        
-        if effects.get('reverb'):
-            pass  # Reverb implementation
-        
-        await player.set_filters(filters)
-        return True
+        try:
+            filters = wavelink.Filters()
+            
+            if effects.get('nightcore'):
+                filters.timescale = wavelink.Timescale(speed=1.2, pitch=1.3, rate=1.0)
+            
+            if effects.get('slow'):
+                filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
+            
+            if effects.get('vaporwave'):
+                filters.timescale = wavelink.Timescale(speed=0.8, pitch=0.9, rate=1.0)
+                filters.rotation = wavelink.Rotation(rotation_hz=0.2)
+            
+            await player.set_filters(filters)
+            return True
+        except Exception as e:
+            logger.error(f"Error applying player effects: {e}")
+            return False
     
     # Statistics and analytics
     async def get_player_statistics(self, guild_id: int) -> Dict:
@@ -578,7 +576,7 @@ class MusicCore:
             return {}
         
         stats = {
-            'session_duration': (datetime.utcnow() - player.session_start).total_seconds(),
+            'session_duration': (datetime.now(timezone.utc) - player.session_start).total_seconds(),
             'tracks_played': player.tracks_played,
             'unique_listeners': len(player.unique_listeners),
             'total_play_time': player.total_play_time,
@@ -607,7 +605,9 @@ class MusicCore:
     def get_most_requested(self, player: EvePlayer) -> Dict:
         """Get most requested artist in queue"""
         artists = {}
-        for track in list(player.queue) + ([player.current] if player.current else []):
+        tracks = list(player.queue) + ([player.current] if player.current else [])
+        
+        for track in tracks:
             if hasattr(track, 'author') and track.author:
                 artists[track.author] = artists.get(track.author, 0) + 1
         
@@ -618,7 +618,7 @@ class MusicCore:
         return {'artist': None, 'count': 0}
     
     # Cache management
-    async def cache_track(self, track: wavelink.Track):
+    async def cache_track(self, track: Track):
         """Cache track for faster future access"""
         cache_key = f"track:{track.source}:{track.identifier}"
         self.track_cache[cache_key] = track
@@ -630,12 +630,12 @@ class MusicCore:
             for key in keys[:100]:
                 self.track_cache.pop(key, None)
     
-    async def get_cached_track(self, identifier: str, source: str) -> Optional[wavelink.Track]:
+    async def get_cached_track(self, identifier: str, source: str) -> Optional[Track]:
         """Get track from cache"""
         cache_key = f"track:{source}:{identifier}"
         return self.track_cache.get(cache_key)
     
-    async def cache_search_results(self, query: str, tracks: List[wavelink.Track]):
+    async def cache_search_results(self, query: str, tracks: List[Track]):
         """Cache search results"""
         cache_key = f"search:{query.lower()}"
         self.search_cache[cache_key] = tracks
@@ -646,7 +646,7 @@ class MusicCore:
             lambda: self.search_cache.pop(cache_key, None)
         )
     
-    async def get_cached_search(self, query: str) -> Optional[List[wavelink.Track]]:
+    async def get_cached_search(self, query: str) -> Optional[List[Track]]:
         """Get cached search results"""
         cache_key = f"search:{query.lower()}"
         return self.search_cache.get(cache_key)
@@ -664,7 +664,7 @@ class MusicCore:
         while True:
             try:
                 # Clean old cooldowns
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 for user_id in list(self.user_cooldowns.keys()):
                     self.user_cooldowns[user_id] = [
                         ts for ts in self.user_cooldowns[user_id]
@@ -718,7 +718,7 @@ class MusicCore:
     
     def format_time_ago(self, dt: datetime) -> str:
         """Format time ago string"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         diff = now - dt
         
         if diff.days > 0:
