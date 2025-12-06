@@ -13,9 +13,16 @@ import asyncio
 from typing import Optional, Dict, List, Tuple, TYPE_CHECKING, Any
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
-from wavelink import Node, Player, Track, Playlist
+
+# Fix wavelink imports
+try:
+    from wavelink import Node, Player, Track, Playlist
+except ImportError:
+    # For wavelink 3.x
+    from wavelink.tracks import Playable as Track
+    from wavelink import Node, Player, Playlist
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +31,8 @@ class OptimizedLavalinkClient:
     
     def __init__(self, bot):
         self.bot = bot
-        self.nodes: List[wavelink.Node] = []
-        self.active_node: Optional[wavelink.Node] = None
+        self.nodes: List[Node] = []
+        self.active_node: Optional[Node] = None
         self.session: Optional[aiohttp.ClientSession] = None
         self.spotify_client: Optional[Any] = None
         
@@ -38,32 +45,28 @@ class OptimizedLavalinkClient:
             limit_per_host=100,
             ttl_dns_cache=600,
             enable_cleanup_closed=True,
-            force_close=True,
+            force_close=False,  # Changed to False for better connection reuse
             use_dns_cache=True
         )
         
-        # Node configuration
+        # Node configuration - update these with your actual Lavalink server details
         self.node_configs = [
             {
                 'identifier': 'MAIN_NODE',
-                'host': 'localhost',
+                'host': 'localhost',  # Change to your Lavalink server host
                 'port': 2333,
-                'password': 'youshallnotpass',
+                'password': 'youshallnotpass',  # Change to your Lavalink password
                 'region': 'global',
                 'resume_key': 'EVE_MUSIC_MAIN',
                 'resume_timeout': 600,
                 'reconnect_attempts': 5,
-                'retries': 3,
-                'pool_size': 100,
-                'max_players': 500,
-                'player_update_interval': 15,
-                'ping_interval': 30
+                'secure': False,  # Change to True if using SSL
+                'spotify_client': None  # Will be set if available
             }
         ]
         
-        # Add fallback nodes if configured
-        if hasattr(bot.config, 'LAVALINK_FALLBACK_NODES'):
-            self.node_configs.extend(bot.config.LAVALINK_FALLBACK_NODES)
+        # Load additional nodes from environment if available
+        self.load_additional_nodes()
         
         # Performance tracking
         self.performance_metrics = {
@@ -74,11 +77,25 @@ class OptimizedLavalinkClient:
         
         # Source priority (for auto-selection)
         self.source_priority = [
-            wavelink.TrackSource.YouTubeMusic,
-            wavelink.TrackSource.YouTube,
-            wavelink.TrackSource.SoundCloud,
-            wavelink.TrackSource.Spotify
+            'youtube',  # Updated source names for wavelink 3.x
+            'youtubemusic',
+            'soundcloud',
+            'spotify'
         ]
+    
+    def load_additional_nodes(self):
+        """Load additional nodes from environment variables"""
+        import os
+        import json
+        
+        # Load from environment variable
+        nodes_json = os.getenv('LAVALINK_NODES', '[]')
+        try:
+            additional_nodes = json.loads(nodes_json)
+            self.node_configs.extend(additional_nodes)
+            logger.info(f"Loaded {len(additional_nodes)} additional Lavalink nodes from environment")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Could not parse LAVALINK_NODES environment variable: {e}")
     
     async def create_session(self):
         """Create optimized aiohttp session"""
@@ -97,8 +114,6 @@ class OptimizedLavalinkClient:
             }
         )
         
-        # Set session for wavelink
-        wavelink.Pool.set_session(self.session)
         logger.info("Created optimized HTTP session")
     
     async def connect_lavalink(self):
@@ -111,25 +126,34 @@ class OptimizedLavalinkClient:
             try:
                 logger.info(f"Connecting to node: {config['identifier']}")
                 
-                # Create node with optimized settings
-                node = await wavelink.NodePool.create_node(
-                    bot=self.bot,
-                    identifier=config['identifier'],
-                    host=config['host'],
-                    port=config['port'],
+                # Initialize Spotify client for this node if needed
+                spotify_client = None
+                if config.get('spotify_credentials'):
+                    try:
+                        from wavelink.ext import spotify
+                        spotify_client = spotify.SpotifyClient(
+                            client_id=config['spotify_credentials']['client_id'],
+                            client_secret=config['spotify_credentials']['client_secret']
+                        )
+                    except ImportError:
+                        logger.warning("Spotify extension not available")
+                
+                # Create node with wavelink 3.x syntax
+                node = Node(
+                    uri=f"{'https' if config.get('secure', False) else 'http'}://{config['host']}:{config['port']}",
                     password=config['password'],
-                    region=config.get('region', 'global'),
+                    identifier=config['identifier'],
                     resume_key=config.get('resume_key', 'EVE_MUSIC'),
                     resume_timeout=config.get('resume_timeout', 300),
-                    reconnect_attempts=config.get('reconnect_attempts', 3),
-                    retries=config.get('retries', 3),
-                    pool_size=config.get('pool_size', 50),
-                    secure=config.get('secure', False)
+                    spotify=spotify_client
                 )
+                
+                # Connect the node
+                await wavelink.Pool.connect(client=self.bot, nodes=[node])
                 
                 self.nodes.append(node)
                 self.node_stats[config['identifier']] = {
-                    'connected_at': datetime.utcnow(),
+                    'connected_at': datetime.now(timezone.utc),
                     'connection_attempts': 1,
                     'last_ping': None,
                     'players': 0,
@@ -143,9 +167,6 @@ class OptimizedLavalinkClient:
                 logger.info(f"✅ Connected to {config['identifier']} at {config['host']}:{config['port']}")
                 connected = True
                 
-                # Initialize Spotify if credentials available
-                await self.initialize_spotify()
-                
             except Exception as e:
                 logger.error(f"❌ Failed to connect to {config['identifier']}: {e}")
                 continue
@@ -155,24 +176,9 @@ class OptimizedLavalinkClient:
             raise ConnectionError("Could not connect to any Lavalink node")
         
         # Start monitoring task
-        self.bot.loop.create_task(self.monitor_nodes())
+        asyncio.create_task(self.monitor_nodes())
         
         return connected
-    
-    async def initialize_spotify(self):
-        """Initialize Spotify client if credentials available"""
-        try:
-            if (hasattr(self.bot.config, 'SPOTIFY_CLIENT_ID') and 
-                hasattr(self.bot.config, 'SPOTIFY_CLIENT_SECRET')):
-                
-                self.spotify_client = spotify.SpotifyClient(
-                    client_id=self.bot.config.SPOTIFY_CLIENT_ID,
-                    client_secret=self.bot.config.SPOTIFY_CLIENT_SECRET
-                )
-                
-                logger.info("✅ Spotify client initialized")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not initialize Spotify: {e}")
     
     async def monitor_nodes(self):
         """Monitor node health and switch if needed"""
@@ -180,22 +186,24 @@ class OptimizedLavalinkClient:
             try:
                 for node in self.nodes:
                     try:
-                        # Get node stats
+                        # Check if node is available
                         stats = await node.fetch_stats()
                         
                         self.node_stats[node.identifier].update({
-                            'last_ping': datetime.utcnow(),
-                            'players': stats.players,
-                            'playing': stats.playing,
-                            'cpu_cores': stats.cpu_cores,
-                            'system_load': stats.system_load,
-                            'memory_used': stats.memory_used,
-                            'memory_free': stats.memory_free,
-                            'uptime': stats.uptime
+                            'last_ping': datetime.now(timezone.utc),
+                            'players': getattr(stats, 'players', 0),
+                            'playing': getattr(stats, 'playing_players', 0),
+                            'cpu_cores': getattr(stats, 'cpu_cores', 0),
+                            'system_load': getattr(stats, 'system_load', 0),
+                            'memory_used': getattr(stats, 'memory_used', 0),
+                            'memory_free': getattr(stats, 'memory_free', 0),
+                            'uptime': getattr(stats, 'uptime', 0)
                         })
                         
                         # Calculate load percentage
-                        load = (stats.playing / max(stats.players, 1)) * 100
+                        players = getattr(stats, 'players', 1)
+                        playing = getattr(stats, 'playing_players', 0)
+                        load = (playing / max(players, 1)) * 100
                         self.node_stats[node.identifier]['load'] = load
                         
                         # Switch to less loaded node if current is overloaded
@@ -204,7 +212,7 @@ class OptimizedLavalinkClient:
                             
                             less_loaded = min(
                                 self.nodes, 
-                                key=lambda n: self.node_stats[n.identifier].get('load', 0)
+                                key=lambda n: self.node_stats.get(n.identifier, {}).get('load', 100)
                             )
                             
                             if less_loaded != node:
@@ -223,7 +231,7 @@ class OptimizedLavalinkClient:
                 logger.error(f"Node monitoring error: {e}")
                 await asyncio.sleep(60)
     
-    async def get_best_node(self, guild_id: Optional[int] = None) -> wavelink.Node:
+    async def get_best_node(self, guild_id: Optional[int] = None) -> Node:
         """Get the best node based on load and region"""
         if not self.nodes:
             raise ConnectionError("No Lavalink nodes available")
@@ -246,31 +254,19 @@ class OptimizedLavalinkClient:
         # Return least loaded node
         return min(
             self.nodes,
-            key=lambda n: self.node_stats.get(n.identifier, {}).get('load', 0)
+            key=lambda n: self.node_stats.get(n.identifier, {}).get('load', 100)
         )
     
-    async def search_tracks(self, query: str, **kwargs) -> List[wavelink.Track]:
+    async def search_tracks(self, query: str, **kwargs) -> List[Track]:
         """Search for tracks with advanced features"""
         start_time = asyncio.get_event_loop().time()
         
         try:
-            # Auto-detect source
-            source = self.detect_source(query)
-            
-            # Set search parameters
-            search_kwargs = {
-                'query': query,
-                'cls': wavelink.Track,
-                'source': source
-            }
-            
-            # Add Spotify specific parameters
-            if source == wavelink.TrackSource.Spotify and self.spotify_client:
-                search_kwargs['spotify_client'] = self.spotify_client
-            
-            # Perform search
+            # Get best node
             node = await self.get_best_node()
-            tracks = await wavelink.NodePool.get_tracks(**search_kwargs)
+            
+            # Perform search with wavelink 3.x syntax
+            tracks = await wavelink.Pool.fetch_tracks(query, node=node)
             
             # Measure performance
             search_time = asyncio.get_event_loop().time() - start_time
@@ -280,11 +276,7 @@ class OptimizedLavalinkClient:
             if len(self.performance_metrics['search_times']) > 100:
                 self.performance_metrics['search_times'].pop(0)
             
-            # Cache results
-            if tracks:
-                await self.cache_search(query, tracks)
-            
-            return tracks
+            return tracks if isinstance(tracks, list) else []
             
         except asyncio.TimeoutError:
             logger.warning(f"Search timeout for: {query}")
@@ -293,75 +285,68 @@ class OptimizedLavalinkClient:
             logger.error(f"Search error for '{query}': {e}")
             return []
     
-    def detect_source(self, query: str) -> wavelink.TrackSource:
+    def detect_source(self, query: str) -> str:
         """Auto-detect source from query"""
         query_lower = query.lower()
         
         # URL detection
         if 'spotify.com' in query_lower or query_lower.startswith('spotify:'):
-            return wavelink.TrackSource.Spotify
+            return 'spotify'
         elif 'soundcloud.com' in query_lower:
-            return wavelink.TrackSource.SoundCloud
+            return 'soundcloud'
         elif 'youtube.com' in query_lower or 'youtu.be' in query_lower:
-            return wavelink.TrackSource.YouTube
+            return 'youtube'
         elif 'bandcamp.com' in query_lower:
-            return wavelink.TrackSource.BandCamp
+            return 'bandcamp'
         elif 'twitch.tv' in query_lower:
-            return wavelink.TrackSource.Twitch
-        elif 'apple.co' in query_lower or 'music.apple.com' in query_lower:
-            return getattr(wavelink.TrackSource, 'AppleMusic', wavelink.TrackSource.YouTube)
+            return 'twitch'
         
         # Check if it's a direct search
         if any(query_lower.startswith(prefix) for prefix in ['ytsearch:', 'scsearch:', 'spsearch:']):
             prefix = query_lower.split(':')[0]
             if prefix == 'spsearch':
-                return wavelink.TrackSource.Spotify
+                return 'spotify'
             elif prefix == 'scsearch':
-                return wavelink.TrackSource.SoundCloud
+                return 'soundcloud'
             else:
-                return wavelink.TrackSource.YouTube
+                return 'youtube'
         
-        # Default to YouTube Music for best quality
-        return wavelink.TrackSource.YouTubeMusic
+        # Default to YouTube for best compatibility
+        return 'youtube'
     
-    async def cache_search(self, query: str, tracks: List[wavelink.Track]):
-        """Cache search results"""
-        # This would interface with CacheManager
-        pass
-    
-    async def get_track_recommendations(self, track: wavelink.Track, limit: int = 10) -> List[wavelink.Track]:
+    async def get_track_recommendations(self, track: Track, limit: int = 10) -> List[Track]:
         """Get track recommendations"""
         try:
-            if track.source == wavelink.TrackSource.Spotify and self.spotify_client:
-                # Spotify recommendations
-                pass
-            else:
-                # YouTube recommendations
-                query = f"Related to: {track.title} {track.author}"
-                return await self.search_tracks(query)[:limit]
-        except:
+            query = f"Related to: {track.title} {track.author}"
+            tracks = await self.search_tracks(query)
+            return tracks[:limit] if tracks else []
+        except Exception as e:
+            logger.error(f"Error getting recommendations: {e}")
             return []
     
-    async def get_playlist_tracks(self, playlist_url: str) -> List[wavelink.Track]:
+    async def get_playlist_tracks(self, playlist_url: str) -> List[Track]:
         """Get all tracks from a playlist"""
         try:
             node = await self.get_best_node()
             
-            if 'spotify.com/playlist' in playlist_url.lower() and self.spotify_client:
-                # Spotify playlist
-                playlist = await spotify.SpotifyTrack.search(
-                    query=playlist_url,
-                    node=node,
-                    spotify_client=self.spotify_client
-                )
-                return playlist.tracks if hasattr(playlist, 'tracks') else []
+            # For wavelink 3.x, playlists are handled differently
+            if 'spotify.com/playlist' in playlist_url.lower():
+                # Spotify playlist - requires spotify extension
+                try:
+                    from wavelink.ext import spotify
+                    decoded = spotify.decode_url(playlist_url)
+                    if decoded and decoded.type == spotify.SpotifySearchType.playlist:
+                        return await spotify.SpotifyTrack.search(
+                            query=playlist_url,
+                            node=node
+                        )
+                except ImportError:
+                    logger.warning("Spotify extension not available")
             else:
-                # YouTube/SoundCloud playlist
-                tracks = await wavelink.NodePool.get_playlist(
-                    query=playlist_url,
-                    cls=wavelink.Track,
-                    node=node
-                )
+                # Regular playlist
+                tracks = await wavelink.Pool.fetch_tracks(playlist_url, node=node)
+                if isinstance(tracks, wavelink.Playlist):
+                    return tracks.tracks
                 return tracks if isinstance(tracks, list) else []
         except Exception as e:
             logger.error(f"Playlist fetch error: {e}")
@@ -393,18 +378,19 @@ class OptimizedLavalinkClient:
         
         return stats
     
-    async def cleanup(self):
-        """Cleanup resources"""
-        if self.session:
-            await self.session.close()
-        
+    async def disconnect(self):
+        """Disconnect from all nodes"""
         for node in self.nodes:
             try:
                 await node.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Error disconnecting node {node.identifier}: {e}")
+    
+    async def cleanup(self):
+        """Cleanup resources"""
+        await self.disconnect()
         
-        if self.spotify_client:
-            await self.spotify_client.close()
+        if self.session:
+            await self.session.close()
         
         logger.info("Lavalink client cleaned up")
