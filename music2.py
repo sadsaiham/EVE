@@ -2541,3 +2541,1414 @@ class VolumeModal(discord.ui.Modal, title="Adjust Volume"):
                 "❌ Please enter a valid number.",
                 ephemeral=True
             )
+
+# Continuation of Music cog class
+
+# Additional UI Views from Part 2
+class PreloadView(discord.ui.View):
+    """View for preload section"""
+    
+    def __init__(self, music_cog, user_id: int):
+        super().__init__(timeout=60)
+        self.music_cog = music_cog
+        self.user_id = user_id
+    
+    @discord.ui.button(label="Preload Music", style=discord.ButtonStyle.green, emoji="🎵")
+    async def preload_music(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Preload individual tracks"""
+        # Get all uncached tracks
+        cursor = await self.music_cog.db.conn.execute(
+            'SELECT * FROM track_stats WHERE is_cached = 0 AND direct_link IS NOT NULL'
+        )
+        
+        tracks_data = await cursor.fetchall()
+        await cursor.close()
+        
+        if not tracks_data:
+            await interaction.response.send_message(
+                "✅ All tracks are already cached!",
+                ephemeral=True
+            )
+            return
+        
+        # Convert to TrackInfo objects
+        tracks = []
+        for row in tracks_data:
+            tracks.append(TrackInfo(
+                filename=row[0],
+                title=row[1],
+                artist=row[2],
+                genre=row[3],
+                description=row[4],
+                direct_link=row[5],
+                service=row[6],
+                plays=row[7],
+                skips=row[8],
+                is_cached=bool(row[9]),
+                cache_path=row[10],
+                last_cached=row[11],
+                last_played=row[12],
+                added_date=row[13]
+            ))
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Preload Tracks",
+                description=f"Select uncached tracks to download ({len(tracks)} available):",
+                color=discord.Color.green()
+            ),
+            view=TrackSelectorView(self.music_cog, tracks, self.user_id, "preload_tracks"),
+            ephemeral=True
+        )
+    
+    @discord.ui.button(label="Preload Playlist", style=discord.ButtonStyle.blurple, emoji="📋")
+    async def preload_playlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Preload entire playlist"""
+        # Get user's playlists
+        playlists = await self.music_cog.db.get_user_playlists(self.user_id)
+        
+        if not playlists:
+            await interaction.response.send_message(
+                "❌ You don't have any playlists yet.",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Preload Playlist",
+                description="Select a playlist to cache all tracks:",
+                color=discord.Color.green()
+            ),
+            view=PlaylistSelectorView(self.music_cog, playlists, self.user_id, "preload_playlist"),
+            ephemeral=True
+        )
+
+class UnloadView(discord.ui.View):
+    """View for unload section"""
+    
+    def __init__(self, music_cog, user_id: int):
+        super().__init__(timeout=60)
+        self.music_cog = music_cog
+        self.user_id = user_id
+    
+    @discord.ui.button(label="Unload Music", style=discord.ButtonStyle.red, emoji="🎵")
+    async def unload_music(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Unload tracks from cache"""
+        # Get all cached tracks
+        cursor = await self.music_cog.db.conn.execute(
+            'SELECT * FROM track_stats WHERE is_cached = 1'
+        )
+        
+        tracks_data = await cursor.fetchall()
+        await cursor.close()
+        
+        if not tracks_data:
+            await interaction.response.send_message(
+                "❌ No tracks are currently cached.",
+                ephemeral=True
+            )
+            return
+        
+        # Convert to TrackInfo objects
+        tracks = []
+        for row in tracks_data:
+            tracks.append(TrackInfo(
+                filename=row[0],
+                title=row[1],
+                artist=row[2],
+                genre=row[3],
+                description=row[4],
+                direct_link=row[5],
+                service=row[6],
+                plays=row[7],
+                skips=row[8],
+                is_cached=bool(row[9]),
+                cache_path=row[10],
+                last_cached=row[11],
+                last_played=row[12],
+                added_date=row[13]
+            ))
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Unload Tracks",
+                description=f"Select cached tracks to remove from cache ({len(tracks)} available):",
+                color=discord.Color.red()
+            ),
+            view=TrackSelectorView(self.music_cog, tracks, self.user_id, "unload_tracks"),
+            ephemeral=True
+        )
+    
+    @discord.ui.button(label="Unload Playlist", style=discord.ButtonStyle.red, emoji="📋")
+    async def unload_playlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Unload entire playlist from cache"""
+        # Get user's playlists
+        playlists = await self.music_cog.db.get_user_playlists(self.user_id)
+        
+        if not playlists:
+            await interaction.response.send_message(
+                "❌ You don't have any playlists yet.",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Unload Playlist",
+                description="Select a playlist to remove all tracks from cache:",
+                color=discord.Color.red()
+            ),
+            view=PlaylistSelectorView(self.music_cog, playlists, self.user_id, "unload_playlist"),
+            ephemeral=True
+        )
+
+class EditView(discord.ui.View):
+    """View for edit section"""
+    
+    def __init__(self, music_cog, user_id: int):
+        super().__init__(timeout=60)
+        self.music_cog = music_cog
+        self.user_id = user_id
+    
+    @discord.ui.button(label="Edit Music", style=discord.ButtonStyle.blurple, emoji="🎵")
+    async def edit_music(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Edit track metadata"""
+        # Get all tracks (could be limited to user's tracks)
+        cursor = await self.music_cog.db.conn.execute(
+            'SELECT * FROM track_stats ORDER BY title'
+        )
+        
+        tracks_data = await cursor.fetchall()
+        await cursor.close()
+        
+        if not tracks_data:
+            await interaction.response.send_message(
+                "❌ No tracks in library.",
+                ephemeral=True
+            )
+            return
+        
+        # Convert to TrackInfo objects
+        tracks = []
+        for row in tracks_data:
+            tracks.append(TrackInfo(
+                filename=row[0],
+                title=row[1],
+                artist=row[2],
+                genre=row[3],
+                description=row[4],
+                direct_link=row[5],
+                service=row[6],
+                plays=row[7],
+                skips=row[8],
+                is_cached=bool(row[9]),
+                cache_path=row[10],
+                last_cached=row[11],
+                last_played=row[12],
+                added_date=row[13]
+            ))
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Edit Track",
+                description="Select a track to edit:",
+                color=discord.Color.blue()
+            ),
+            view=TrackSelectorView(self.music_cog, tracks, self.user_id, "edit_track", single_select=True),
+            ephemeral=True
+        )
+    
+    @discord.ui.button(label="Edit Playlist", style=discord.ButtonStyle.blurple, emoji="📋")
+    async def edit_playlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Edit playlist info"""
+        # Get user's playlists
+        playlists = await self.music_cog.db.get_user_playlists(self.user_id)
+        
+        if not playlists:
+            await interaction.response.send_message(
+                "❌ You don't have any playlists yet.",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Edit Playlist",
+                description="Select a playlist to edit:",
+                color=discord.Color.blue()
+            ),
+            view=PlaylistSelectorView(self.music_cog, playlists, self.user_id, "edit_playlist", single_select=True),
+            ephemeral=True
+        )
+
+class PlaylistSelectorView(discord.ui.View):
+    """View for selecting playlists with action"""
+    
+    def __init__(self, music_cog, playlists: List[Playlist], user_id: int, action: str, single_select: bool = False):
+        super().__init__(timeout=60)
+        self.music_cog = music_cog
+        self.playlists = playlists
+        self.user_id = user_id
+        self.action = action
+        self.single_select = single_select
+        self.page = 0
+        self.items_per_page = 20
+        
+        # Add dropdown
+        self.add_item(self.PlaylistDropdown(self))
+    
+    class PlaylistDropdown(discord.ui.Select):
+        """Dropdown for playlist selection"""
+        
+        def __init__(self, parent_view):
+            self.parent = parent_view
+            
+            # Get playlists for current page
+            start_idx = parent_view.page * parent_view.items_per_page
+            end_idx = min(start_idx + parent_view.items_per_page, len(parent_view.playlists))
+            page_playlists = parent_view.playlists[start_idx:end_idx]
+            
+            # Create options
+            options = []
+            for i, playlist in enumerate(page_playlists):
+                description = playlist.description or "No description"
+                if len(description) > 45:
+                    description = description[:42] + "..."
+                
+                options.append(discord.SelectOption(
+                    label=f"{playlist.name[:90]}",
+                    description=f"{description} | {len(playlist.tracks)} tracks",
+                    value=str(playlist.id),
+                    emoji="📋"
+                ))
+            
+            max_values = 1 if parent_view.single_select else len(options)
+            
+            super().__init__(
+                placeholder=f"Select playlist{'s' if max_values > 1 else ''} (Page {parent_view.page + 1})",
+                min_values=1,
+                max_values=max_values,
+                options=options
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            selected_ids = [int(val) for val in self.values]
+            
+            if self.parent.action == "delete_playlists":
+                # Delete selected playlists
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                deleted_count = 0
+                for playlist_id in selected_ids:
+                    success = await self.parent.music_cog.db.delete_playlist(playlist_id)
+                    if success:
+                        deleted_count += 1
+                
+                await interaction.followup.send(
+                    f"✅ Deleted {deleted_count} playlist{'s' if deleted_count != 1 else ''}.",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "preload_playlist":
+                # Preload all tracks in selected playlists
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                total_tracks = 0
+                preloaded = 0
+                failed = 0
+                
+                for playlist_id in selected_ids:
+                    playlist = await self.parent.music_cog.db.get_playlist(playlist_id)
+                    if playlist:
+                        total_tracks += len(playlist.tracks)
+                        
+                        for track in playlist.tracks:
+                            if not track.is_cached and track.direct_link:
+                                try:
+                                    await self.parent.music_cog.cache.preload_track(track)
+                                    preloaded += 1
+                                except:
+                                    failed += 1
+                
+                await interaction.followup.send(
+                    f"⏳ Preloading {preloaded} tracks from {len(selected_ids)} playlist{'s' if len(selected_ids) != 1 else ''}...\n"
+                    f"✅ {preloaded} added to download queue\n"
+                    f"❌ {failed} failed\n"
+                    f"Total tracks in playlists: {total_tracks}",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "unload_playlist":
+                # Unload all tracks in selected playlists from cache
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                unloaded_count = 0
+                failed_count = 0
+                
+                for playlist_id in selected_ids:
+                    playlist = await self.parent.music_cog.db.get_playlist(playlist_id)
+                    if playlist:
+                        for track in playlist.tracks:
+                            if track.is_cached:
+                                success = await self.parent.music_cog.cache.remove_from_cache(track.filename)
+                                if success:
+                                    # Update database
+                                    await self.parent.music_cog.db.conn.execute(
+                                        'UPDATE track_stats SET is_cached = 0, cache_path = NULL WHERE filename = ?',
+                                        (track.filename,)
+                                    )
+                                    unloaded_count += 1
+                                else:
+                                    failed_count += 1
+                
+                await self.parent.music_cog.db.conn.commit()
+                
+                # Calculate freed space
+                freed_mb = (unloaded_count * 5)  # Approximation
+                
+                await interaction.followup.send(
+                    f"✅ Unloaded {unloaded_count} tracks from cache\n"
+                    f"❌ {failed_count} failed\n"
+                    f"📊 Approximately {freed_mb} MB freed",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "edit_playlist":
+                # Edit single playlist
+                playlist_id = selected_ids[0]
+                playlist = await self.parent.music_cog.db.get_playlist(playlist_id)
+                
+                if playlist:
+                    await interaction.response.send_modal(
+                        EditPlaylistModal(self.parent.music_cog, playlist)
+                    )
+            
+            elif self.parent.action in ["add_tracks", "remove_from_playlist"]:
+                # Store selected playlist for next step
+                self.parent.selected_playlist_id = selected_ids[0]
+                
+                # Get tracks for the next step
+                if self.parent.action == "add_tracks":
+                    # Get all tracks not in playlist
+                    cursor = await self.parent.music_cog.db.conn.execute('''
+                        SELECT ts.* FROM track_stats ts
+                        WHERE ts.filename NOT IN (
+                            SELECT track_filename FROM playlist_tracks 
+                            WHERE playlist_id = ?
+                        )
+                        ORDER BY ts.title
+                    ''', (selected_ids[0],))
+                else:  # remove_from_playlist
+                    # Get tracks in playlist
+                    cursor = await self.parent.music_cog.db.conn.execute('''
+                        SELECT ts.* FROM track_stats ts
+                        JOIN playlist_tracks pt ON ts.filename = pt.track_filename
+                        WHERE pt.playlist_id = ?
+                        ORDER BY pt.position
+                    ''', (selected_ids[0],))
+                
+                tracks_data = await cursor.fetchall()
+                await cursor.close()
+                
+                # Convert to TrackInfo objects
+                tracks = []
+                for row in tracks_data:
+                    tracks.append(TrackInfo(
+                        filename=row[0],
+                        title=row[1],
+                        artist=row[2],
+                        genre=row[3],
+                        description=row[4],
+                        direct_link=row[5],
+                        service=row[6],
+                        plays=row[7],
+                        skips=row[8],
+                        is_cached=bool(row[9]),
+                        cache_path=row[10],
+                        last_cached=row[11],
+                        last_played=row[12],
+                        added_date=row[13]
+                    ))
+                
+                action_text = "add to" if self.parent.action == "add_tracks" else "remove from"
+                
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title=f"Select Tracks to {action_text.replace('_', ' ').title()}",
+                        description=f"Select tracks to {action_text} **{playlist.name}**:",
+                        color=discord.Color.blue()
+                    ),
+                    view=TrackSelectorView(
+                        self.parent.music_cog, 
+                        tracks, 
+                        self.parent.user_id, 
+                        self.parent.action,
+                        playlist_id=selected_ids[0]
+                    ),
+                    ephemeral=True
+                )
+    
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.grey)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Go to previous page"""
+        if self.page > 0:
+            self.page -= 1
+            await self.update_view(interaction)
+        else:
+            await interaction.response.defer()
+    
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.grey)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Go to next page"""
+        if (self.page + 1) * self.items_per_page < len(self.playlists):
+            self.page += 1
+            await self.update_view(interaction)
+        else:
+            await interaction.response.defer()
+    
+    async def update_view(self, interaction: discord.Interaction):
+        """Update the view with current page"""
+        # Clear existing items
+        self.clear_items()
+        
+        # Add dropdown for current page
+        self.add_item(self.PlaylistDropdown(self))
+        
+        # Add navigation buttons
+        if len(self.playlists) > self.items_per_page:
+            self.add_item(NavigationButton("Previous", "previous", disabled=self.page == 0))
+            self.add_item(NavigationButton("Next", "next", 
+                disabled=(self.page + 1) * self.items_per_page >= len(self.playlists)))
+        
+        await interaction.response.edit_message(view=self)
+
+class TrackSelectorView(discord.ui.View):
+    """View for selecting tracks with action"""
+    
+    def __init__(self, music_cog, tracks: List[TrackInfo], user_id: int, action: str, 
+                 playlist_id: int = None, single_select: bool = False):
+        super().__init__(timeout=60)
+        self.music_cog = music_cog
+        self.tracks = tracks
+        self.user_id = user_id
+        self.action = action
+        self.playlist_id = playlist_id
+        self.single_select = single_select
+        self.page = 0
+        self.items_per_page = 20
+        
+        # Add dropdown
+        self.add_item(self.TrackDropdown(self))
+    
+    class TrackDropdown(discord.ui.Select):
+        """Dropdown for track selection"""
+        
+        def __init__(self, parent_view):
+            self.parent = parent_view
+            
+            # Get tracks for current page
+            start_idx = parent_view.page * parent_view.items_per_page
+            end_idx = min(start_idx + parent_view.items_per_page, len(parent_view.tracks))
+            page_tracks = parent_view.tracks[start_idx:end_idx]
+            
+            # Create options
+            options = []
+            for i, track in enumerate(page_tracks):
+                display_name = track.display_name
+                if len(display_name) > 90:
+                    display_name = display_name[:87] + "..."
+                
+                cache_indicator = " ✅" if track.is_cached else " ⏳"
+                plays_indicator = f" | {track.plays} plays" if track.plays > 0 else ""
+                
+                options.append(discord.SelectOption(
+                    label=f"{track.title[:90]}",
+                    description=f"{track.artist[:45]}{cache_indicator}{plays_indicator}",
+                    value=track.filename,
+                    emoji=EMOJIS['music']
+                ))
+            
+            max_values = 1 if parent_view.single_select else len(options)
+            
+            super().__init__(
+                placeholder=f"Select track{'s' if max_values > 1 else ''} (Page {parent_view.page + 1})",
+                min_values=1,
+                max_values=max_values,
+                options=options
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            selected_filenames = self.values
+            
+            if self.parent.action == "remove_tracks":
+                # Remove tracks from library
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                removed_count = 0
+                failed_count = 0
+                
+                for filename in selected_filenames:
+                    try:
+                        # Remove from database
+                        await self.parent.music_cog.db.conn.execute(
+                            'DELETE FROM track_stats WHERE filename = ?',
+                            (filename,)
+                        )
+                        
+                        # Remove from cache if exists
+                        if await self.parent.music_cog.cache.remove_from_cache(filename):
+                            # Update cache size
+                            pass
+                        
+                        # Remove from search index
+                        self.parent.music_cog.search_index.remove_track(filename)
+                        
+                        removed_count += 1
+                    except:
+                        failed_count += 1
+                
+                await self.parent.music_cog.db.conn.commit()
+                self.parent.music_cog.search_index.save()
+                
+                await interaction.followup.send(
+                    f"✅ Removed {removed_count} track{'s' if removed_count != 1 else ''} from library\n"
+                    f"❌ {failed_count} failed",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "preload_tracks":
+                # Preload selected tracks
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                preloaded_count = 0
+                already_cached = 0
+                failed_count = 0
+                
+                for filename in selected_filenames:
+                    track = next((t for t in self.parent.tracks if t.filename == filename), None)
+                    if track:
+                        if track.is_cached:
+                            already_cached += 1
+                        elif track.direct_link:
+                            try:
+                                await self.parent.music_cog.cache.preload_track(track)
+                                preloaded_count += 1
+                            except:
+                                failed_count += 1
+                
+                await interaction.followup.send(
+                    f"⏳ Added {preloaded_count} track{'s' if preloaded_count != 1 else ''} to download queue\n"
+                    f"✅ {already_cached} already cached\n"
+                    f"❌ {failed_count} failed",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "unload_tracks":
+                # Unload selected tracks from cache
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                unloaded_count = 0
+                failed_count = 0
+                freed_mb = 0
+                
+                for filename in selected_filenames:
+                    track = next((t for t in self.parent.tracks if t.filename == filename), None)
+                    if track and track.is_cached:
+                        success = await self.parent.music_cog.cache.remove_from_cache(filename)
+                        if success:
+                            # Update database
+                            await self.parent.music_cog.db.conn.execute(
+                                'UPDATE track_stats SET is_cached = 0, cache_path = NULL WHERE filename = ?',
+                                (filename,)
+                            )
+                            unloaded_count += 1
+                            freed_mb += 5  # Approximation
+                        else:
+                            failed_count += 1
+                
+                await self.parent.music_cog.db.conn.commit()
+                
+                await interaction.followup.send(
+                    f"✅ Unloaded {unloaded_count} track{'s' if unloaded_count != 1 else ''} from cache\n"
+                    f"❌ {failed_count} failed\n"
+                    f"📊 Approximately {freed_mb} MB freed",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "edit_track":
+                # Edit single track
+                filename = selected_filenames[0]
+                track = next((t for t in self.parent.tracks if t.filename == filename), None)
+                
+                if track:
+                    await interaction.response.send_modal(
+                        EditTrackModal(self.parent.music_cog, track)
+                    )
+            
+            elif self.parent.action == "add_tracks" and self.parent.playlist_id:
+                # Add tracks to playlist
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                added_count = 0
+                already_in_playlist = 0
+                
+                for filename in selected_filenames:
+                    success = await self.parent.music_cog.db.add_to_playlist(
+                        self.parent.playlist_id, 
+                        filename
+                    )
+                    if success:
+                        added_count += 1
+                    else:
+                        already_in_playlist += 1
+                
+                playlist = await self.parent.music_cog.db.get_playlist(self.parent.playlist_id)
+                
+                await interaction.followup.send(
+                    f"✅ Added {added_count} track{'s' if added_count != 1 else ''} to **{playlist.name}**\n"
+                    f"⚠️ {already_in_playlist} already in playlist",
+                    ephemeral=True
+                )
+            
+            elif self.parent.action == "remove_from_playlist" and self.parent.playlist_id:
+                # Remove tracks from playlist
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                
+                removed_count = 0
+                
+                for filename in selected_filenames:
+                    success = await self.parent.music_cog.db.remove_from_playlist(
+                        self.parent.playlist_id, 
+                        filename
+                    )
+                    if success:
+                        removed_count += 1
+                
+                playlist = await self.parent.music_cog.db.get_playlist(self.parent.playlist_id)
+                
+                await interaction.followup.send(
+                    f"✅ Removed {removed_count} track{'s' if removed_count != 1 else ''} from **{playlist.name}**",
+                    ephemeral=True
+                )
+    
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.grey)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Go to previous page"""
+        if self.page > 0:
+            self.page -= 1
+            await self.update_view(interaction)
+        else:
+            await interaction.response.defer()
+    
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.grey)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Go to next page"""
+        if (self.page + 1) * self.items_per_page < len(self.tracks):
+            self.page += 1
+            await self.update_view(interaction)
+        else:
+            await interaction.response.defer()
+    
+    async def update_view(self, interaction: discord.Interaction):
+        """Update the view with current page"""
+        # Clear existing items
+        self.clear_items()
+        
+        # Add dropdown for current page
+        self.add_item(self.TrackDropdown(self))
+        
+        # Add navigation buttons
+        if len(self.tracks) > self.items_per_page:
+            self.add_item(NavigationButton("Previous", "previous", disabled=self.page == 0))
+            self.add_item(NavigationButton("Next", "next", 
+                disabled=(self.page + 1) * self.items_per_page >= len(self.tracks)))
+        
+        await interaction.response.edit_message(view=self)
+
+class EditTrackModal(discord.ui.Modal, title="Edit Track"):
+    """Modal for editing track metadata"""
+    
+    def __init__(self, music_cog, track: TrackInfo):
+        super().__init__()
+        self.music_cog = music_cog
+        self.track = track
+        
+        # Pre-fill with current values
+        self.title_input = discord.ui.TextInput(
+            label="Track Title",
+            default=track.title,
+            max_length=100,
+            required=True
+        )
+        
+        self.artist_input = discord.ui.TextInput(
+            label="Artist",
+            default=track.artist,
+            max_length=100,
+            required=True
+        )
+        
+        self.genre_input = discord.ui.TextInput(
+            label="Genre",
+            default=track.genre or "",
+            max_length=50,
+            required=False
+        )
+        
+        self.add_item(self.title_input)
+        self.add_item(self.artist_input)
+        self.add_item(self.genre_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        try:
+            # Update database
+            await self.music_cog.db.conn.execute('''
+                UPDATE track_stats 
+                SET title = ?, artist = ?, genre = ?
+                WHERE filename = ?
+            ''', (
+                self.title_input.value,
+                self.artist_input.value,
+                self.genre_input.value or None,
+                self.track.filename
+            ))
+            
+            await self.music_cog.db.conn.commit()
+            
+            # Update search index
+            self.track.title = self.title_input.value
+            self.track.artist = self.artist_input.value
+            self.track.genre = self.genre_input.value or None
+            self.music_cog.search_index.add_track(self.track)
+            self.music_cog.search_index.save()
+            
+            await interaction.followup.send(
+                f"✅ Updated **{self.track.title}** by **{self.track.artist}**",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error updating track: {e}",
+                ephemeral=True
+            )
+
+class EditPlaylistModal(discord.ui.Modal, title="Edit Playlist"):
+    """Modal for editing playlist info"""
+    
+    def __init__(self, music_cog, playlist: Playlist):
+        super().__init__()
+        self.music_cog = music_cog
+        self.playlist = playlist
+        
+        # Pre-fill with current values
+        self.name_input = discord.ui.TextInput(
+            label="Playlist Name",
+            default=playlist.name,
+            max_length=100,
+            required=True
+        )
+        
+        self.description_input = discord.ui.TextInput(
+            label="Description",
+            default=playlist.description or "",
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+            required=False
+        )
+        
+        self.add_item(self.name_input)
+        self.add_item(self.description_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        try:
+            # Update database
+            await self.music_cog.db.conn.execute('''
+                UPDATE playlists 
+                SET name = ?, description = ?
+                WHERE id = ?
+            ''', (
+                self.name_input.value,
+                self.description_input.value or None,
+                self.playlist.id
+            ))
+            
+            await self.music_cog.db.conn.commit()
+            
+            await interaction.followup.send(
+                f"✅ Updated playlist **{self.name_input.value}**",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error updating playlist: {e}",
+                ephemeral=True
+            )
+
+# Autocomplete for /play command
+async def play_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete for /play command"""
+    if not interaction.guild:
+        return []
+    
+    music_cog = interaction.client.get_cog('Music')
+    if not music_cog:
+        return []
+    
+    # Search for tracks
+    search_results = music_cog.search_index.search(current, limit=25)
+    
+    choices = []
+    for filename, score in search_results:
+        track = await music_cog.db.get_track(filename)
+        if track:
+            display_text = f"{track.title} - {track.artist}"
+            if len(display_text) > 95:
+                display_text = display_text[:92] + "..."
+            
+            cache_indicator = " ✅" if track.is_cached else ""
+            choices.append(
+                app_commands.Choice(
+                    name=f"{display_text}{cache_indicator}",
+                    value=filename
+                )
+            )
+    
+    return choices[:25]
+
+# Slash Commands
+@app_commands.command(name="play", description="Play a track from the library")
+@app_commands.describe(
+    query="Search for a track to play",
+    playlist="Optional: Play a playlist instead"
+)
+@app_commands.autocomplete(query=play_autocomplete)
+async def play_command(interaction: discord.Interaction, query: str = None, playlist: str = None):
+    """Play a track or playlist"""
+    music_cog = interaction.client.get_cog('Music')
+    
+    if not await music_cog.ensure_voice(interaction):
+        return
+    
+    if not query and not playlist:
+        await interaction.response.send_message(
+            "❌ Please provide a track to play or select a playlist.",
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer()
+    
+    player = await music_cog.get_player(interaction.guild.id)
+    
+    try:
+        if playlist:
+            # Play a playlist
+            try:
+                playlist_id = int(playlist)
+                playlist_obj = await music_cog.db.get_playlist(playlist_id)
+                
+                if not playlist_obj:
+                    await interaction.followup.send("❌ Playlist not found.")
+                    return
+                
+                # Add all tracks from playlist to queue
+                for track in playlist_obj.tracks:
+                    player.add_to_queue(track)
+                
+                # Start playback if not already playing
+                if not player.is_playing:
+                    await music_cog.play_next(interaction.guild.id)
+                
+                await interaction.followup.send(
+                    f"📋 Added **{playlist_obj.name}** ({len(playlist_obj.tracks)} tracks) to queue!"
+                )
+                
+            except ValueError:
+                await interaction.followup.send("❌ Invalid playlist ID.")
+        
+        else:
+            # Play a single track
+            track = await music_cog.db.get_track(query)
+            
+            if not track:
+                # Try to search for track
+                search_results = music_cog.search_index.search(query, limit=1)
+                if search_results:
+                    track = await music_cog.db.get_track(search_results[0][0])
+            
+            if not track:
+                await interaction.followup.send("❌ Track not found.")
+                return
+            
+            # Add track to queue
+            player.add_to_queue(track)
+            
+            # Start playback if not already playing
+            if not player.is_playing:
+                await music_cog.play_next(interaction.guild.id)
+                await interaction.followup.send(f"🎵 Now playing **{track.title}** by **{track.artist}**!")
+            else:
+                await interaction.followup.send(f"🎵 Added **{track.title}** to queue!")
+        
+        # Preload next tracks
+        await music_cog.preload_queue_tracks(interaction.guild.id)
+        
+    except Exception as e:
+        logger.error(f"Error in play command: {e}")
+        await interaction.followup.send(f"❌ Error playing track: {e}")
+
+@app_commands.command(name="managemusic", description="Open music management panel")
+async def managemusic_command(interaction: discord.Interaction):
+    """Open management panel"""
+    music_cog = interaction.client.get_cog('Music')
+    
+    embed = discord.Embed(
+        title="🎵 Music Management Panel",
+        description="Welcome to the music management interface!",
+        color=discord.Color.blue()
+    ).add_field(
+        name="Sections",
+        value="• **Add Content**: Add tracks or create playlists\n"
+              "• **Remove Content**: Remove tracks or delete playlists\n"
+              "• **Manage**: Preload, unload, or edit content\n"
+              "• **Statistics**: View library stats\n"
+              "• **Help**: Get help with all features",
+        inline=False
+    ).set_footer(text="Click the buttons below to navigate")
+    
+    await interaction.response.send_message(
+        embed=embed,
+        view=music_cog.ManageMusicView(music_cog, interaction.user.id),
+        ephemeral=True
+    )
+
+@app_commands.command(name="testlink", description="Test a cloud storage link")
+@app_commands.describe(link="The link to test")
+async def testlink_command(interaction: discord.Interaction, link: str):
+    """Test a cloud storage link"""
+    music_cog = interaction.client.get_cog('Music')
+    
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    
+    try:
+        result = await music_cog.link_resolver.test_link(link)
+        
+        embed = discord.Embed(
+            title="🔗 Link Test Results",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(name="Original URL", value=link[:500], inline=False)
+        embed.add_field(name="Service", value=result['service'] or "Unknown", inline=True)
+        embed.add_field(name="Status", value=result['status'], inline=True)
+        
+        if result['direct_url']:
+            embed.add_field(name="Direct URL", value=result['direct_url'][:500], inline=False)
+        
+        if result['file_size'] > 0:
+            size_mb = result['file_size'] / (1024 * 1024)
+            embed.add_field(name="File Size", value=f"{size_mb:.2f} MB", inline=True)
+        
+        if result['content_type']:
+            embed.add_field(name="Content Type", value=result['content_type'], inline=True)
+        
+        if result['is_supported']:
+            embed.add_field(name="Supported", value="✅ Yes", inline=True)
+        else:
+            embed.add_field(name="Supported", value="⚠️ May not be audio", inline=True)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error testing link: {e}", ephemeral=True)
+
+# Text Commands (Jockey-style)
+@commands.command(name="play", aliases=["p"])
+async def text_play(self, ctx: commands.Context, *, query: str = None):
+    """Play a track (text command)"""
+    # Convert to slash command style
+    interaction = await self.bot.get_context(ctx)
+    interaction.command = self.play_command
+    interaction.data = {"options": [{"name": "query", "value": query}]} if query else {}
+    
+    await self.play_command.callback(self, interaction)
+
+@commands.command(name="skip", aliases=["s"])
+async def text_skip(self, ctx: commands.Context):
+    """Skip current track"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player or not player.voice_client or not player.is_playing:
+        await ctx.send("❌ Nothing is playing.")
+        return
+    
+    # Add to history
+    if player.current_track:
+        player.history.append(player.current_track)
+        if len(player.history) > 50:
+            player.history.pop(0)
+        
+        # Increment skip count
+        await self.db.increment_skip(player.current_track.filename)
+    
+    # Stop current playback
+    if player.voice_client.is_playing():
+        player.voice_client.stop()
+    
+    player.update_activity()
+    await ctx.send("⏭️ Skipped!")
+
+@commands.command(name="pause")
+async def text_pause(self, ctx: commands.Context):
+    """Pause playback"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player or not player.voice_client or not player.is_playing:
+        await ctx.send("❌ Nothing is playing.")
+        return
+    
+    if player.is_paused:
+        await ctx.send("⚠️ Already paused.")
+        return
+    
+    player.voice_client.pause()
+    player.is_paused = True
+    player.update_activity()
+    
+    await self.update_now_playing(ctx.guild.id)
+    await ctx.send("⏸️ Paused!")
+
+@commands.command(name="resume", aliases=["r"])
+async def text_resume(self, ctx: commands.Context):
+    """Resume playback"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player or not player.voice_client:
+        await ctx.send("❌ Nothing is playing.")
+        return
+    
+    if not player.is_paused:
+        await ctx.send("⚠️ Already playing.")
+        return
+    
+    player.voice_client.resume()
+    player.is_paused = False
+    player.update_activity()
+    
+    await self.update_now_playing(ctx.guild.id)
+    await ctx.send("▶️ Resumed!")
+
+@commands.command(name="stop")
+async def text_stop(self, ctx: commands.Context):
+    """Stop playback and clear queue"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player:
+        await ctx.send("❌ No player active.")
+        return
+    
+    # Stop playback
+    if player.voice_client:
+        player.voice_client.stop()
+    
+    # Clear queue
+    player.clear_queue()
+    player.current_track = None
+    player.is_playing = False
+    player.is_paused = False
+    
+    # Update display
+    await self.update_now_playing(ctx.guild.id)
+    await ctx.send("⏹️ Playback stopped and queue cleared!")
+
+@commands.command(name="queue", aliases=["q"])
+async def text_queue(self, ctx: commands.Context):
+    """Show current queue"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player:
+        await ctx.send("❌ No player active.")
+        return
+    
+    if not player.queue and not player.current_track:
+        await ctx.send("❌ Queue is empty.")
+        return
+    
+    embed = discord.Embed(
+        title=f"{EMOJIS['queue']} Queue",
+        color=discord.Color.blue()
+    )
+    
+    # Show current track
+    if player.current_track:
+        embed.add_field(
+            name="Now Playing",
+            value=f"**{player.current_track.title}** - {player.current_track.artist}",
+            inline=False
+        )
+    
+    # Show queue
+    if player.queue:
+        queue_text = ""
+        for i, track in enumerate(player.queue[:15], 1):
+            cache_indicator = " ✅" if track.is_cached else " ⏳"
+            queue_text += f"{i}. **{track.title}** - {track.artist}{cache_indicator}\n"
+        
+        if len(player.queue) > 15:
+            queue_text += f"\n...and {len(player.queue) - 15} more tracks"
+        
+        embed.add_field(
+            name=f"Up Next ({len(player.queue)} tracks)",
+            value=queue_text,
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Up Next",
+            value="Queue is empty",
+            inline=False
+        )
+    
+    # Add playback info
+    if player.current_track:
+        embed.add_field(name="Loop Mode", value=player.loop_mode.capitalize(), inline=True)
+        embed.add_field(name="Volume", value=f"{int(player.volume * 100)}%", inline=True)
+    
+    await ctx.send(embed=embed)
+
+@commands.command(name="nowplaying", aliases=["np"])
+async def text_nowplaying(self, ctx: commands.Context):
+    """Show current track info"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player or not player.current_track:
+        await ctx.send("❌ Nothing is playing.")
+        return
+    
+    track = player.current_track
+    
+    embed = discord.Embed(
+        title=f"{EMOJIS['music']} Now Playing",
+        color=discord.Color.green()
+    )
+    
+    embed.description = f"**{track.title}**\nby {track.artist}"
+    
+    if track.genre:
+        embed.add_field(name="Genre", value=track.genre, inline=True)
+    
+    embed.add_field(name="Plays", value=str(track.plays + 1), inline=True)
+    
+    # Cache status
+    cache_status = f"{EMOJIS['success']} Cached" if track.is_cached else f"{EMOJIS['warning']} Streaming"
+    embed.add_field(name="Status", value=cache_status, inline=True)
+    
+    # Playback info
+    status = f"{EMOJIS['play']} Playing" if not player.is_paused else f"{EMOJIS['pause']} Paused"
+    embed.add_field(name="Status", value=status, inline=True)
+    embed.add_field(name="Volume", value=f"{int(player.volume * 100)}%", inline=True)
+    embed.add_field(name="Loop", value=player.loop_mode.capitalize(), inline=True)
+    
+    # Queue info
+    if player.queue:
+        next_track = player.queue[0]
+        embed.add_field(
+            name="Next Up",
+            value=f"**{next_track.title}** - {next_track.artist}",
+            inline=False
+        )
+    
+    await ctx.send(embed=embed)
+
+@commands.command(name="previous", aliases=["prev"])
+async def text_previous(self, ctx: commands.Context):
+    """Play previous track"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player:
+        await ctx.send("❌ No player active.")
+        return
+    
+    # Add current track to beginning of queue and play previous from history
+    if player.current_track and player.history:
+        if player.current_track:
+            player.queue.insert(0, player.current_track)
+        
+        previous_track = player.history.pop()
+        player.queue.insert(0, previous_track)
+        
+        # Skip current
+        if player.voice_client and player.voice_client.is_playing():
+            player.voice_client.stop()
+        
+        await ctx.send("⏮️ Playing previous track!")
+    else:
+        await ctx.send("❌ No previous track.")
+
+@commands.command(name="volume", aliases=["vol"])
+async def text_volume(self, ctx: commands.Context, volume: int = None):
+    """Set volume (1-100)"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player or not player.voice_client:
+        await ctx.send("❌ No player active.")
+        return
+    
+    if volume is None:
+        await ctx.send(f"🔊 Current volume: {int(player.volume * 100)}%")
+        return
+    
+    if volume < 1 or volume > 100:
+        await ctx.send("❌ Volume must be between 1 and 100.")
+        return
+    
+    player.volume = volume / 100
+    if player.voice_client.source:
+        player.voice_client.source.volume = player.volume
+    
+    player.update_activity()
+    await self.update_now_playing(ctx.guild.id)
+    await ctx.send(f"🔊 Volume set to {volume}%")
+
+@commands.command(name="loop")
+async def text_loop(self, ctx: commands.Context, mode: str = None):
+    """Set loop mode (off, track, queue)"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player:
+        await ctx.send("❌ No player active.")
+        return
+    
+    if mode is None:
+        await ctx.send(f"🔁 Current loop mode: {player.loop_mode.capitalize()}")
+        return
+    
+    mode = mode.lower()
+    if mode not in ['off', 'track', 'queue']:
+        await ctx.send("❌ Invalid mode. Use: off, track, or queue")
+        return
+    
+    player.loop_mode = mode
+    player.update_activity()
+    
+    await self.update_now_playing(ctx.guild.id)
+    await ctx.send(f"🔁 Loop mode set to: {mode.capitalize()}")
+
+@commands.command(name="shuffle")
+async def text_shuffle(self, ctx: commands.Context):
+    """Shuffle the queue"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player:
+        await ctx.send("❌ No player active.")
+        return
+    
+    if player.queue:
+        player.shuffle_queue()
+        await ctx.send("🔀 Queue shuffled!")
+    else:
+        await ctx.send("❌ Queue is empty.")
+
+@commands.command(name="remove")
+async def text_remove(self, ctx: commands.Context, *, positions: str):
+    """Remove tracks from queue (e.g., "1,3,5-7" or "all")"""
+    player = self.players.get(ctx.guild.id)
+    
+    if not player:
+        await ctx.send("❌ No player active.")
+        return
+    
+    if not player.queue:
+        await ctx.send("❌ Queue is empty.")
+        return
+    
+    if positions.lower() == 'all':
+        removed_count = len(player.queue)
+        player.clear_queue()
+        await ctx.send(f"✅ Removed all {removed_count} tracks from queue.")
+        return
+    
+    # Parse positions
+    positions_to_remove = set()
+    
+    for part in positions.split(','):
+        part = part.strip()
+        if '-' in part:
+            # Range
+            try:
+                start, end = map(int, part.split('-'))
+                for pos in range(start, end + 1):
+                    if 1 <= pos <= len(player.queue):
+                        positions_to_remove.add(pos - 1)  # Convert to 0-indexed
+            except:
+                continue
+        else:
+            # Single position
+            try:
+                pos = int(part)
+                if 1 <= pos <= len(player.queue):
+                    positions_to_remove.add(pos - 1)  # Convert to 0-indexed
+            except:
+                continue
+    
+    if not positions_to_remove:
+        await ctx.send("❌ No valid positions provided.")
+        return
+    
+    # Remove tracks (from highest to lowest to maintain indices)
+    removed_tracks = []
+    for pos in sorted(positions_to_remove, reverse=True):
+        if 0 <= pos < len(player.queue):
+            removed_tracks.append(player.queue.pop(pos))
+    
+    player.update_activity()
+    
+    if removed_tracks:
+        track_list = "\n".join([f"• {track.title}" for track in removed_tracks[:5]])
+        if len(removed_tracks) > 5:
+            track_list += f"\n...and {len(removed_tracks) - 5} more"
+        
+        await ctx.send(f"✅ Removed {len(removed_tracks)} track{'s' if len(removed_tracks) != 1 else ''}:\n{track_list}")
+    else:
+        await ctx.send("❌ No tracks were removed.")
+
+# Add commands to cog
+async def setup(bot: commands.Bot):
+    """Setup function for the cog"""
+    music_cog = Music(bot)
+    
+    # Add slash commands
+    music_cog.play_command = play_command
+    music_cog.managemusic_command = managemusic_command
+    music_cog.testlink_command = testlink_command
+    
+    # Add text commands
+    music_cog.text_play = text_play
+    music_cog.text_skip = text_skip
+    music_cog.text_pause = text_pause
+    music_cog.text_resume = text_resume
+    music_cog.text_stop = text_stop
+    music_cog.text_queue = text_queue
+    music_cog.text_nowplaying = text_nowplaying
+    music_cog.text_previous = text_previous
+    music_cog.text_volume = text_volume
+    music_cog.text_loop = text_loop
+    music_cog.text_shuffle = text_shuffle
+    music_cog.text_remove = text_remove
+    
+    # Add commands to cog
+    bot.tree.add_command(play_command)
+    bot.tree.add_command(managemusic_command)
+    bot.tree.add_command(testlink_command)
+    
+    await bot.add_cog(music_cog)
